@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
+import crypto from 'crypto';
 
 const app = express();
 app.use(bodyParser.json());
@@ -13,6 +14,8 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'let-me-in';
+const BOT_TOKEN = process.env.BOT_TOKEN;            // токен твоего бота
+const ADMIN_UI_TOKEN = process.env.ADMIN_UI_TOKEN || 'admin-ui';
 
 // цены (USD за 1M токенов)
 const PRICES = {
@@ -36,6 +39,39 @@ async function auth(req, res, next) {
   } catch (e) { return res.status(401).json({ error: 'bad auth' }); }
 }
 
+// Проверка подписи initData (Telegram WebApp)
+function checkTelegramInitData(initData) {
+  // initData — это строка query (user=...&auth_date=...&hash=...)
+  if (!initData) return null;
+  const urlParams = new URLSearchParams(initData);
+  const hash = urlParams.get('hash');
+  urlParams.delete('hash');
+
+  const dataCheckString = Array.from(urlParams.entries())
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([k,v]) => `${k}=${v}`).join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData')
+    .update(BOT_TOKEN).digest();
+
+  const hmac = crypto.createHmac('sha256', secretKey)
+    .update(dataCheckString).digest('hex');
+
+  if (hmac !== hash) return null;
+
+  // вернём всё как объект + распарсим user
+  const obj = Object.fromEntries(new URLSearchParams(initData));
+  try { obj.user = JSON.parse(obj.user); } catch {}
+  return obj;
+}
+
+// простая проверка "админ-токена" через query ?token=...
+function adminAuth(req,res,next){
+  const t = req.query.token || req.headers['x-admin-ui-token'];
+  if (t === ADMIN_UI_TOKEN) return next();
+  return res.status(401).send('Unauthorized');
+}
+
 // --- Регистрация пользователя: email/username/name/tg_id ---
 app.post('/api/register', async (req, res) => {
   const { email, username, name, tg_id } = req.body || {};
@@ -55,6 +91,45 @@ app.post('/api/register', async (req, res) => {
   const token = sign(user);
   res.cookie('auth', token, { httpOnly: true, sameSite: 'lax', maxAge: 180*24*3600*1000 });
   res.json({ ok: true, user: { id: user.id, email: user.email, username: user.username, name: user.name, tg_id: user.tg_id } });
+});
+
+// --- TWA регистрация через Telegram WebApp ---
+app.post('/twa/register', async (req, res) => {
+  try {
+    const { initData, name, surname } = req.body || {};
+    const parsed = checkTelegramInitData(initData);
+    if (!parsed?.user?.id) return res.status(401).json({ error: 'bad_signature' });
+
+    const tg = parsed.user;
+    const displayName = [name || tg.first_name, surname || tg.last_name].filter(Boolean).join(' ') || tg.first_name || 'User';
+
+    // апсерт пользователя по tg_id (и/или email если будет)
+    const rows = await q(`
+      insert into users(email, username, name, tg_id)
+      values($1,$2,$3,$4)
+      on conflict (tg_id) do update set
+        username = coalesce(excluded.username, users.username),
+        name     = coalesce(excluded.name, users.name)
+      returning *;
+    `, [null, tg.username ?? null, displayName, tg.id]);
+
+    const user = rows[0];
+
+    // если нет профиля — создадим базовый
+    await q(`
+      insert into learning_profile(user_id, target_lang, level_cefr, style, goal, summary)
+      values($1,'en','A1','{}','Travel basics','New learner')
+      on conflict (user_id) do nothing
+    `, [user.id]);
+
+    // выдадим JWT
+    const token = sign(user);
+    res.cookie('auth', token, { httpOnly: true, sameSite: 'lax', maxAge: 180*24*3600*1000 });
+    res.json({ ok:true, user: { id:user.id, tg_id:user.tg_id, name:user.name, username:user.username } });
+  } catch (e) {
+    console.error('twa/register', e);
+    res.status(500).json({ error:'server_error' });
+  }
 });
 
 // --- Обновление профиля обучения (короткая сводка для LLM) ---
@@ -191,6 +266,102 @@ app.get('/api/usage/admin/daily', async (req, res) => {
     limit 60;
   `, []);
   res.json({ days: rows });
+});
+
+// --- Админ: данные для таблицы ---
+app.get('/admin/data', adminAuth, async (req,res)=>{
+  const users = await q(`
+    select u.id, u.tg_id, u.username, u.name, u.created_at
+    from users u order by u.created_at desc limit 500
+  `, []);
+
+  // последние 30 дней токены/стоимость
+  const costs = await q(`
+    select user_id,
+           sum(total_tokens) as total_tokens,
+           sum(total_cost_usd) as total_cost_usd
+    from token_usage
+    where created_at >= now() - interval '30 days'
+    group by user_id
+  `, []);
+
+  const today = await q(`
+    select user_id,
+           sum(total_tokens) as tokens_today,
+           sum(total_cost_usd) as cost_today
+    from token_usage
+    where created_at::date = current_date
+    group by user_id
+  `, []);
+
+  const byId = (arr, key) => Object.fromEntries(arr.map(r => [r[key], r]));
+  const c30 = byId(costs, 'user_id');
+  const tdy = byId(today, 'user_id');
+
+  const rows = users.map(u => ({
+    ...u,
+    tokens_30d: Number(c30[u.id]?.total_tokens || 0),
+    cost_30d_usd: Number(c30[u.id]?.total_cost_usd || 0).toFixed(4),
+    tokens_today: Number(tdy[u.id]?.tokens_today || 0),
+    cost_today_usd: Number(tdy[u.id]?.cost_today || 0).toFixed(4)
+  }));
+
+  const totals = {
+    users: users.length,
+    tokens_30d: rows.reduce((s,r)=>s+r.tokens_30d,0),
+    cost_30d_usd: rows.reduce((s,r)=>s+Number(r.cost_30d_usd),0).toFixed(4),
+    tokens_today: rows.reduce((s,r)=>s+r.tokens_today,0),
+    cost_today_usd: rows.reduce((s,r)=>s+Number(r.cost_today_usd),0).toFixed(4),
+  };
+
+  res.json({ totals, rows });
+});
+
+// --- UI-страничка админа ---
+app.get('/admin', adminAuth, async (req,res)=>{
+  res.send(`<!doctype html>
+  <html lang="ru"><head>
+  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Mindora Admin</title>
+  <style>
+    body{font-family:system-ui;background:#0e1026;color:#eaf0ff;margin:0;padding:20px}
+    h1{margin:0 0 10px 0}
+    .card{background:#121531;border:1px solid #272d63;border-radius:12px;padding:12px;margin-bottom:16px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid #2a3270;text-align:left;font-size:14px}
+    th{opacity:.8}
+    .muted{opacity:.7}
+  </style></head><body>
+  <h1>Mindora — Admin</h1>
+  <div class="card" id="totals">Загрузка...</div>
+  <div class="card"><table id="tbl"><thead>
+    <tr><th>Name</th><th>@user</th><th>tg_id</th><th>Joined</th>
+        <th>Tokens (30d)</th><th>Cost (30d)</th><th>Tokens (today)</th><th>Cost (today)</th></tr>
+  </thead><tbody></tbody></table></div>
+  <script>
+    async function load(){
+      const r = await fetch('/admin/data?token=${ADMIN_UI_TOKEN}');
+      const { totals, rows } = await r.json();
+      document.getElementById('totals').innerHTML =
+        'Users: '+totals.users+' | Tokens(30d): '+totals.tokens_30d+' | Cost(30d): $'+totals.cost_30d_usd+
+        ' | Tokens(today): '+totals.tokens_today+' | Cost(today): $'+totals.cost_today_usd;
+
+      const tb = document.querySelector('#tbl tbody'); tb.innerHTML='';
+      rows.forEach(r=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML = '<td>'+ (r.name||'') +'</td>'+
+          '<td class="muted">'+ (r.username?'@'+r.username:'') +'</td>'+
+          '<td class="muted">'+ (r.tg_id||'') +'</td>'+
+          '<td class="muted">'+ new Date(r.created_at).toLocaleString() +'</td>'+
+          '<td>'+ r.tokens_30d +'</td>'+
+          '<td>$'+ r.cost_30d_usd +'</td>'+
+          '<td>'+ r.tokens_today +'</td>'+
+          '<td>$'+ r.cost_today_usd +'</td>';
+        tb.appendChild(tr);
+      });
+    }
+    load();
+  </script></body></html>`);
 });
 
 const PORT = process.env.PORT || 3001;

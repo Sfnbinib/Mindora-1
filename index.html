@@ -3,32 +3,54 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mindora — AI Language Mentor</title>
+<title>Mindora — вход</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  body {
-    background:#0e1026; color:#eaf0ff; font-family: system-ui;
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    height:100vh; margin:0; text-align:center;
-  }
-  button {
-    background:linear-gradient(180deg,#3b8dff,#2856e0);
-    border:none; border-radius:12px; padding:12px 22px;
-    color:white; font-size:16px; cursor:pointer; margin-top:20px;
-  }
+  body{margin:0;height:100dvh;display:grid;place-items:center;background:#0e1026;color:#eaf0ff;font-family:system-ui}
+  .card{width:min(560px,94vw);background:#121531;border:1px solid #272d63;border-radius:14px;padding:16px}
+  input,button{padding:10px 12px;border-radius:10px;border:1px solid #2a3270;background:#0e1230;color:#eaf0ff}
+  button{cursor:pointer;background:linear-gradient(180deg,#3b8dff,#2856e0);border-color:#3563ff}
+  .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 </style>
 </head>
 <body>
-  <h1>🌐 Mindora</h1>
-  <p>AI-наставник по изучению языков</p>
-  <button id="btn">Запустить обучение</button>
-  <script>
-    const tg = window.Telegram?.WebApp;
-    tg?.expand(); tg?.ready();
-    document.getElementById('btn').onclick = () => {
-      tg?.sendData('start');
-      alert('Mindora готова! 🚀 (интеграция с ботом скоро)');
-    };
-  </script>
+<div class="card">
+  <h2>Mindora</h2>
+  <p>Создай аккаунт одним нажатием. Мы возьмём твой Telegram ID, имя/юзернейм и создадим профиль.</p>
+
+  <div class="row">
+    <input id="name" placeholder="Имя (опционально)" />
+    <input id="surname" placeholder="Фамилия (опционально)" />
+  </div>
+
+  <div class="row">
+    <button id="go">Создать аккаунт</button>
+  </div>
+
+  <p id="msg" style="opacity:.8;margin-top:10px"></p>
+</div>
+
+<script>
+const tg = window.Telegram?.WebApp; tg?.expand(); tg?.ready();
+document.getElementById('go').onclick = async ()=>{
+  const msg = (s)=> document.getElementById('msg').textContent = s;
+  msg('Отправляем запрос...');
+  try{
+    const r = await fetch('https://YOUR-API.EXAMPLE.COM/twa/register',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        initData: tg?.initData || '',
+        name: document.getElementById('name').value,
+        surname: document.getElementById('surname').value
+      })
+    });
+    const data = await r.json();
+    if(!r.ok || !data.ok){ msg('Ошибка: '+(data.error||r.status)); return; }
+    // успех → открываем Home
+    window.location.href = '/home.html';
+  }catch(e){ msg('Сеть: '+e); }
+};
+</script>
 </body>
 </html>
