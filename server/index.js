@@ -5,6 +5,7 @@ import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
+import { cfAccessRequired } from './cloudflareAccess.js';
 
 const app = express();
 app.use(bodyParser.json());
@@ -268,8 +269,8 @@ app.get('/api/usage/admin/daily', async (req, res) => {
   res.json({ days: rows });
 });
 
-// --- Админ: данные для таблицы ---
-app.get('/admin/data', adminAuth, async (req,res)=>{
+// --- Админ: данные для таблицы (защищено CF Access) ---
+app.get('/admin/data', cfAccessRequired, async (req,res)=>{
   const users = await q(`
     select u.id, u.tg_id, u.username, u.name, u.created_at
     from users u order by u.created_at desc limit 500
@@ -317,52 +318,7 @@ app.get('/admin/data', adminAuth, async (req,res)=>{
   res.json({ totals, rows });
 });
 
-// --- UI-страничка админа ---
-app.get('/admin', adminAuth, async (req,res)=>{
-  res.send(`<!doctype html>
-  <html lang="ru"><head>
-  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Mindora Admin</title>
-  <style>
-    body{font-family:system-ui;background:#0e1026;color:#eaf0ff;margin:0;padding:20px}
-    h1{margin:0 0 10px 0}
-    .card{background:#121531;border:1px solid #272d63;border-radius:12px;padding:12px;margin-bottom:16px}
-    table{width:100%;border-collapse:collapse}
-    th,td{padding:8px;border-bottom:1px solid #2a3270;text-align:left;font-size:14px}
-    th{opacity:.8}
-    .muted{opacity:.7}
-  </style></head><body>
-  <h1>Mindora — Admin</h1>
-  <div class="card" id="totals">Загрузка...</div>
-  <div class="card"><table id="tbl"><thead>
-    <tr><th>Name</th><th>@user</th><th>tg_id</th><th>Joined</th>
-        <th>Tokens (30d)</th><th>Cost (30d)</th><th>Tokens (today)</th><th>Cost (today)</th></tr>
-  </thead><tbody></tbody></table></div>
-  <script>
-    async function load(){
-      const r = await fetch('/admin/data?token=${ADMIN_UI_TOKEN}');
-      const { totals, rows } = await r.json();
-      document.getElementById('totals').innerHTML =
-        'Users: '+totals.users+' | Tokens(30d): '+totals.tokens_30d+' | Cost(30d): $'+totals.cost_30d_usd+
-        ' | Tokens(today): '+totals.tokens_today+' | Cost(today): $'+totals.cost_today_usd;
-
-      const tb = document.querySelector('#tbl tbody'); tb.innerHTML='';
-      rows.forEach(r=>{
-        const tr=document.createElement('tr');
-        tr.innerHTML = '<td>'+ (r.name||'') +'</td>'+
-          '<td class="muted">'+ (r.username?'@'+r.username:'') +'</td>'+
-          '<td class="muted">'+ (r.tg_id||'') +'</td>'+
-          '<td class="muted">'+ new Date(r.created_at).toLocaleString() +'</td>'+
-          '<td>'+ r.tokens_30d +'</td>'+
-          '<td>$'+ r.cost_30d_usd +'</td>'+
-          '<td>'+ r.tokens_today +'</td>'+
-          '<td>$'+ r.cost_today_usd +'</td>';
-        tb.appendChild(tr);
-      });
-    }
-    load();
-  </script></body></html>`);
-});
+// Админ-страница теперь на Vercel (admin/index.html)
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, ()=> console.log('API listening on '+PORT));

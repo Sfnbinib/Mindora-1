@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Mindora — Admin</title>
+<style>
+ body{font-family:system-ui;background:#0e1026;color:#eaf0ff;margin:0;padding:20px}
+ h1{margin:0 0 10px} 
+ .card{background:#121531;border:1px solid #272d63;border-radius:12px;padding:12px;margin:12px 0}
+ table{width:100%;border-collapse:collapse} 
+ th,td{padding:8px;border-bottom:1px solid #2a3270;text-align:left;font-size:14px}
+ th{opacity:.8}
+ .muted{opacity:.7}
+ .error{color:#ff6b6b;background:#2d1b1b;padding:8px;border-radius:6px;margin:8px 0}
+</style>
+</head>
+<body>
+<h1>Mindora — Admin</h1>
+<div class="card" id="totals">Загрузка…</div>
+<div class="card">
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Name</th><th>@user</th><th>tg_id</th><th>Plan</th><th>Joined</th>
+        <th>Tokens(30d)</th><th>Cost(30d)</th><th>Tokens(today)</th><th>Cost(today)</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+(async ()=>{
+  try {
+    const r = await fetch('https://YOUR-API.DOMAIN/admin/data', { 
+      credentials:'include',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if(!r.ok){ 
+      document.getElementById('totals').innerHTML = '<div class="error">Нет доступа или ошибка API: ' + r.status + '</div>'; 
+      return; 
+    }
+    
+    const { totals, rows } = await r.json();
+    document.getElementById('totals').innerHTML = 
+      `Users: ${totals.users} | Tokens(30d): ${totals.tokens_30d} | Cost(30d): $${totals.cost_30d_usd} | Tokens(today): ${totals.tokens_today} | Cost(today): $${totals.cost_today_usd}`;
+
+    const tb = document.querySelector('#tbl tbody'); 
+    tb.innerHTML='';
+    
+    rows.forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${r.name||''}</td>
+                     <td class="muted">${r.username?('@'+r.username):''}</td>
+                     <td class="muted">${r.tg_id||''}</td>
+                     <td>${r.plan||'free'}</td>
+                     <td class="muted">${new Date(r.created_at).toLocaleString()}</td>
+                     <td>${r.tokens_30d}</td>
+                     <td>$${r.cost_30d_usd}</td>
+                     <td>${r.tokens_today}</td>
+                     <td>$${r.cost_today_usd}</td>`;
+      tb.appendChild(tr);
+    });
+  } catch (error) {
+    document.getElementById('totals').innerHTML = '<div class="error">Ошибка загрузки: ' + error.message + '</div>';
+  }
+})();
+</script>
+</body></html>
