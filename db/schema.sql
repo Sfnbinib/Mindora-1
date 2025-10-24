@@ -52,3 +52,5 @@ select
   sum(total_cost_usd) as total_cost_usd
 from token_usage
 group by user_id, date_trunc('day', created_at)::date;
+
+
